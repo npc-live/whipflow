@@ -1,0 +1,8 @@
+{
+  "providers": {
+    "claude-code": {
+      "bin": "claude",
+      "timeout": 300000
+    }
+  }
+}

@@ -1,0 +1,10 @@
+# Smoke test — verify the runtime is working
+
+agent worker:
+  provider: "claude-code"
+  model: sonnet
+  tools: ["bash"]
+  prompt: "You are a helpful assistant."
+
+let result = session: worker
+  prompt: "Run: echo 'whipflow is working' and tell me the output."
