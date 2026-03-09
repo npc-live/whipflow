@@ -1,4 +1,4 @@
-# whipflow
+# whipflow.dev
 
 AI workflow automation for [harness.farm](https://harness.farm).
 

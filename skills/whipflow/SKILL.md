@@ -7,6 +7,9 @@ description: |
 
   Activate when: user wants to create or run a workflow, mentions whipflow,
   or needs to automate a multi-step AI task for harness.farm.
+
+  If whipflow is not installed, offer to install it:
+  npm i -g @harness.farm/whipflow
 ---
 
 # Whipflow
