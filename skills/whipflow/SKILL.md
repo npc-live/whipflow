@@ -656,6 +656,58 @@ else:
 
 ---
 
+## Skill Invocation
+
+Invoke a Claude Code skill (`/<name>`) as a session step. Parameters are passed
+as additional context after the skill name.
+
+### Syntax
+
+```whip
+# Basic invocation
+skill <name>
+
+# With named parameters
+skill <name> param1=<expr> param2=<expr>
+
+# Capture output
+skill <name> param=<expr> -> varname
+
+# As an expression (in let/const)
+let result = skill <name> param=<expr>
+```
+
+### Examples
+
+```whip
+# Run the /commit skill
+skill commit
+
+# Run /review-pr with a PR number
+skill review-pr args="123"
+
+# Run /simplify and capture output
+let review = skill simplify
+
+# Use a variable as parameter
+let diff = session: researcher
+  prompt: "Show me the git diff"
+
+skill review-pr args=diff -> feedback
+
+session: writer
+  prompt: "Address this feedback:\n{feedback}"
+```
+
+### How It Works
+
+- `skill foo` expands to a session that sends `/foo` to a `claude-code` agent
+- Parameters are appended as `key:\nvalue` blocks after the skill name
+- Output can be captured with `-> varname` or `let result = skill ...`
+- Skills run with the default model and no extra tools/permissions
+
+---
+
 ## Provider Config (.open-prose.json)
 
 Place in the project root to configure providers:

@@ -1,0 +1,76 @@
+agent installer:
+  provider: "claude-code"
+  tools: ["bash", "read", "write", "edit"]
+  prompt: """
+You are a CLI tool installer for whipflow.
+
+Registry location:  ~/.whipflow/registry.json
+Wrapper scripts:    ~/.whipflow/bin/<name>   (must be chmod +x)
+
+registry.json schema:
+{
+  "tools": {
+    "<name>": {
+      "name": "<name>",
+      "type": "python" | "node" | "bun" | "github",
+      "source": "<original source>",
+      "entrypoint": "<absolute path to run>",
+      "bin": "~/.whipflow/bin/<name>",
+      "registeredAt": "<ISO timestamp>"
+    }
+  }
+}
+
+Wrapper script format (bash):
+  #!/bin/bash
+  exec <runtime> "<entrypoint>" "$@"
+
+Runtimes: python3 for .py, node for .js, bun for .ts
+"""
+
+session: installer
+  prompt: """
+Read the following environment variables to get the registration request:
+  - WHIPFLOW_REGISTER_SOURCE : the source to register (run: echo $WHIPFLOW_REGISTER_SOURCE)
+  - WHIPFLOW_REGISTER_NAME   : desired CLI name, may be empty (run: echo $WHIPFLOW_REGISTER_NAME)
+
+Then perform these steps:
+
+1. Read both env vars with bash.
+
+2. Determine type from source:
+   - starts with "github:" or "https://github.com/" → GitHub repo
+   - ends with .py → Python
+   - ends with .js → Node.js
+   - ends with .ts → Bun/TypeScript
+   - is a directory → inspect contents (package.json? main.py? index.js?)
+
+3. Derive name:
+   - if WHIPFLOW_REGISTER_NAME is non-empty, use it
+   - otherwise strip path and extension from source filename
+
+4. For GitHub repos:
+   - Clone: git clone --depth 1 <url> ~/.whipflow/registry/<name>
+   - If package.json found: detect bun.lock → bun install, else npm install
+   - If requirements.txt found: pip install -r requirements.txt
+   - Detect entrypoint: check package.json bin/main fields, then index.js, main.py, app.py
+
+5. For local files/dirs:
+   - Resolve to absolute path
+   - For directories: detect entry point same as above
+
+6. Create ~/.whipflow/bin/ if it doesn't exist.
+
+7. Write wrapper script at ~/.whipflow/bin/<name> and chmod +x it.
+
+8. Read ~/.whipflow/registry.json (create if missing with {"tools":{}}).
+   Add or update the entry for this tool. Write back.
+
+9. Print a clear confirmation:
+   ✓ registered <name>  [type]
+     entrypoint: <path>
+     run with:  <name> --help
+
+If ~/.whipflow/bin is not in PATH, print:
+  Add to shell: export PATH="$HOME/.whipflow/bin:$PATH"
+"""
