@@ -26,17 +26,37 @@ Wrapper script format (bash):
   exec <runtime> "<entrypoint>" "$@"
 
 Runtimes: python3 for .py, node for .js, bun for .ts
+
+SECURITY — input validation (apply BEFORE any other step):
+  - Name: must match ^[a-zA-Z0-9_-]+$. Reject anything else immediately.
+  - Source (GitHub URL): must match ^https://github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+(\.git)?$
+    Reject any URL that does not match this pattern.
+  - Source (local path): resolve to absolute path with realpath, verify the file or
+    directory exists. Reject if it does not.
+  - Reject any source value containing shell metacharacters: ; $ ` | & ( ) { } < > \n
+    Abort registration and print an error if any are found.
+  - Always quote all variable expansions in shell commands (use "$var", never bare $var).
 """
 
 session: installer
   prompt: """
 Read the following environment variables to get the registration request:
-  - WHIPFLOW_REGISTER_SOURCE : the source to register (run: echo $WHIPFLOW_REGISTER_SOURCE)
-  - WHIPFLOW_REGISTER_NAME   : desired CLI name, may be empty (run: echo $WHIPFLOW_REGISTER_NAME)
+  - WHIPFLOW_REGISTER_SOURCE : the source to register (run: echo "$WHIPFLOW_REGISTER_SOURCE")
+  - WHIPFLOW_REGISTER_NAME   : desired CLI name, may be empty (run: echo "$WHIPFLOW_REGISTER_NAME")
 
 Then perform these steps:
 
-1. Read both env vars with bash.
+0. **Input validation (mandatory — do this first, abort on any failure):**
+   a. NAME must match the regex ^[a-zA-Z0-9_-]+$ (alphanumeric, hyphens, underscores only).
+      If it contains any other character, abort with an error.
+   b. SOURCE must not contain shell metacharacters: ; $ ` | & ( ) { } < >
+      If it does, abort with an error.
+   c. For GitHub URLs: SOURCE must match ^https://github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+(\.git)?$
+      Reject any other URL format.
+   d. For local paths: resolve to absolute path with realpath and verify the path exists.
+      Reject if the resolved path does not exist.
+
+1. Read both env vars with bash (quoting them: echo "$WHIPFLOW_REGISTER_SOURCE").
 
 2. Determine type from source:
    - starts with "github:" or "https://github.com/" → GitHub repo
@@ -48,11 +68,12 @@ Then perform these steps:
 3. Derive name:
    - if WHIPFLOW_REGISTER_NAME is non-empty, use it
    - otherwise strip path and extension from source filename
+   - Validate the derived name matches ^[a-zA-Z0-9_-]+$. Abort if not.
 
 4. For GitHub repos:
-   - Clone: git clone --depth 1 <url> ~/.whipflow/registry/<name>
+   - Clone: git clone --depth 1 -- "<url>" "$HOME/.whipflow/registry/<name>"
    - If package.json found: detect bun.lock → bun install, else npm install
-   - If requirements.txt found: pip install -r requirements.txt
+   - If requirements.txt found: pip install --no-deps -r requirements.txt
    - Detect entrypoint: check package.json bin/main fields, then index.js, main.py, app.py
 
 5. For local files/dirs:

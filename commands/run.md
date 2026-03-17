@@ -5,12 +5,16 @@ argument-hint: <flow.whip>
 
 Run the whipflow workflow at: $ARGUMENTS
 
-```bash
-whipflow run $ARGUMENTS
-```
+First, validate the argument:
+- If no argument is given, list available flows:
+  ```bash
+  ls flows/*.whip
+  ```
+  Then ask which one to run.
+- The argument must end with `.whip`. If it does not, reject with an error.
+- The file must exist. If it does not, reject with an error.
 
-If no file is given, list available flows:
+Then run:
 ```bash
-ls flows/*.whip
+whipflow run "$ARGUMENTS"
 ```
-Then ask which one to run.
