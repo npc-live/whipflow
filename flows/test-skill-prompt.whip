@@ -1,0 +1,10 @@
+# Test: use skill as prompt in a session
+
+agent coder:
+  provider: "claude-code"
+  model: sonnet
+  tools: ["bash"]
+  prompt: "You are a helpful coding assistant."
+
+let result = session: coder
+  prompt: skill simplify input="function add(a, b) { return a + b; }"

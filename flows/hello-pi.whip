@@ -1,0 +1,10 @@
+# Smoke test — verify pi provider is working
+
+agent worker:
+  provider: "pi"
+  model: sonnet
+  tools: ["bash"]
+  prompt: "You are a helpful assistant."
+
+let result = session: worker
+  prompt: "Run: echo 'pi provider is working' and tell me the output."
