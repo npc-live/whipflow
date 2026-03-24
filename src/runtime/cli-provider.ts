@@ -143,10 +143,12 @@ async function runCli(cfg: CliConfig, prompt: string, extraArgs: string[] = []):
     // Line buffer for stream-json: chunks may split across JSON boundaries
     let lineBuffer = '';
 
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
     const settle = (fn: () => void) => {
       if (!settled) {
         settled = true;
-        clearTimeout(timer);
+        if (timer !== null) clearTimeout(timer);
         child.stdout?.removeAllListeners();
         child.stderr?.removeAllListeners();
         child.removeAllListeners();
@@ -155,10 +157,10 @@ async function runCli(cfg: CliConfig, prompt: string, extraArgs: string[] = []):
       }
     };
 
-    const timer = setTimeout(
-      () => settle(() => reject(new Error(`${cfg.name} timed out`))),
-      cfg.timeout ?? 1800000
-    );
+    const timeoutMs = cfg.timeout === 0 ? null : (cfg.timeout ?? 1800000);
+    if (timeoutMs !== null) {
+      timer = setTimeout(() => settle(() => reject(new Error(`${cfg.name} timed out`))), timeoutMs);
+    }
 
     child.stdout.on('data', (d: Buffer) => {
       const chunk = d.toString();

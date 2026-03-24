@@ -63,6 +63,7 @@ import { ToolDefinition, ToolRegistry } from './tools';
 import { loadCustomTools } from './custom-tools-loader';
 import { getToolsConfig } from './provider-config';
 import { RESET, BOLD, CYAN, GREEN } from './ansi';
+import { StateStore, SessionRecord } from './state-store';
 
 /**
  * Special exception used to signal a return statement
@@ -86,6 +87,18 @@ export class Interpreter {
   // Cache of CLI providers keyed by provider string
   private cliProviderCache: Map<string, CliProvider> = new Map();
 
+  // Buffered stdin lines for ask statements (handles piped/non-TTY input correctly)
+  private stdinLineBuffer: string[] = [];
+  private stdinRemainder: string = '';
+  private stdinEnded: boolean = false;
+
+  // State persistence
+  private stateStore: StateStore | null = null;
+  private currentRunId: number | null = null;
+  private currentSessionIndex: number = 0;
+  private replaySessions: SessionRecord[] = [];
+  private onRunStarted: ((newRunId: number) => void) | null = null;
+
   // Context enrichment tracking
   private executionEvents: ExecutionEvent[] = [];
   private currentFileName: string | null = null;
@@ -103,9 +116,25 @@ export class Interpreter {
   constructor(
     env: RuntimeEnvironment,
     toolRegistry?: ToolRegistry | null,
+    stateStore?: StateStore | null,
+    replaySessions?: SessionRecord[],
+    resumeVariables?: Record<string, unknown>,
+    onRunStarted?: (newRunId: number) => void,
   ) {
     this.env = env;
     this.toolRegistry = toolRegistry || null;
+    this.stateStore = stateStore || null;
+    this.replaySessions = replaySessions || [];
+    this.onRunStarted = onRunStarted || null;
+    if (resumeVariables) {
+      for (const [name, value] of Object.entries(resumeVariables)) {
+        this.env.contextManager.declareVariable(name, value as any, false, { start: { line: 0, column: 0, offset: 0 }, end: { line: 0, column: 0, offset: 0 } });
+      }
+    }
+  }
+
+  setCurrentFileName(fileName: string): void {
+    this.currentFileName = fileName;
   }
 
   /** Get or create a CliProvider for the given provider string */
@@ -132,6 +161,36 @@ export class Interpreter {
     this.recentSessionOutputs = [];
     this.allSessionOutputs = [];
     this.currentBlockStack = [];
+    this.currentSessionIndex = 0;
+
+    if (this.stateStore && this.currentFileName) {
+      this.currentRunId = this.stateStore.startRun(this.currentFileName);
+
+      // Batch-persist ALL replay sessions into the new run upfront, before executing
+      // anything. This ensures that if execution crashes immediately, the next resume
+      // can still recover the full set of previously completed sessions.
+      if (this.replaySessions.length > 0 && this.currentRunId !== null) {
+        for (const record of this.replaySessions) {
+          const replayed: SessionResult = {
+            output: record.output,
+            metadata: {
+              model: record.model,
+              duration: record.durationMs,
+              tokensUsed: record.tokensUsed ?? undefined,
+              toolCalls: record.toolCallsJson ? JSON.parse(record.toolCallsJson) : undefined,
+            },
+          };
+          let vars: Record<string, unknown> = {};
+          try { vars = JSON.parse(record.variablesJson); } catch { /* ignore */ }
+          this.stateStore.recordSession(this.currentRunId, record.sessionIndex, record.prompt, replayed, vars);
+        }
+      }
+
+      // Now it's safe to delete the old run — new run has all sessions atomically
+      if (this.onRunStarted && this.currentRunId !== null) {
+        this.onRunStarted(this.currentRunId);
+      }
+    }
 
     try {
       // Execute all statements sequentially
@@ -150,6 +209,10 @@ export class Interpreter {
       const finalContext = this.env.contextManager.captureContext();
 
       this.env.log('info', `Execution completed successfully in ${this.env.getExecutionDuration()}ms`);
+
+      if (this.stateStore && this.currentRunId !== null) {
+        this.stateStore.completeRun(this.currentRunId);
+      }
 
       return {
         success: true,
@@ -173,6 +236,10 @@ export class Interpreter {
       };
 
       this.env.addError(executionError);
+
+      if (this.stateStore && this.currentRunId !== null) {
+        this.stateStore.failRun(this.currentRunId, executionError.message);
+      }
 
       return {
         success: false,
@@ -272,6 +339,24 @@ export class Interpreter {
   private async executeSessionStatement(statement: SessionStatementNode): Promise<StatementResult> {
     this.env.log('info', 'Executing session statement');
 
+    // RESUME: check if this session index has already been completed
+    const replayRecord = this.replaySessions.find(r => r.sessionIndex === this.currentSessionIndex);
+    if (replayRecord) {
+      this.env.log('info', `[REPLAYED] session ${this.currentSessionIndex} from state`);
+      const replayed: SessionResult = {
+        output: replayRecord.output,
+        metadata: {
+          model: replayRecord.model,
+          duration: replayRecord.durationMs,
+          tokensUsed: replayRecord.tokensUsed ?? undefined,
+          toolCalls: replayRecord.toolCallsJson ? JSON.parse(replayRecord.toolCallsJson) : undefined,
+        },
+      };
+      this.trackSessionOutput(replayed);
+      this.currentSessionIndex++;
+      return { value: replayed };
+    }
+
     // Build session spec
     const spec = await this.buildSessionSpec(statement);
 
@@ -309,6 +394,13 @@ export class Interpreter {
 
         // Track session output for context enrichment and final display
         this.trackSessionOutput(result);
+
+        // Persist session to state store
+        if (this.stateStore && this.currentRunId !== null) {
+          const vars = Object.fromEntries(this.env.contextManager.getAllVariables());
+          this.stateStore.recordSession(this.currentRunId, this.currentSessionIndex, spec.prompt, result, vars);
+        }
+        this.currentSessionIndex++;
 
         // Add to execution events
         this.addExecutionEvent('session', `Session completed: ${result.output.substring(0, 50)}...`, result);
@@ -359,13 +451,12 @@ export class Interpreter {
     // Evaluate the value expression
     const value = await this.evaluateExpression(binding.value);
 
-    // Declare the variable
-    this.env.contextManager.declareVariable(
-      binding.name.name,
-      value,
-      false, // not const
-      binding.span
-    );
+    // Declare the variable (or overwrite if already injected by resume state)
+    if (this.env.contextManager.hasVariable(binding.name.name)) {
+      this.env.contextManager.setVariable(binding.name.name, value);
+    } else {
+      this.env.contextManager.declareVariable(binding.name.name, value, false, binding.span);
+    }
 
     this.env.log('debug', `Variable '${binding.name.name}' declared with value: ${JSON.stringify(value)}`);
 
@@ -381,13 +472,12 @@ export class Interpreter {
     // Evaluate the value expression
     const value = await this.evaluateExpression(binding.value);
 
-    // Declare the constant
-    this.env.contextManager.declareVariable(
-      binding.name.name,
-      value,
-      true, // const
-      binding.span
-    );
+    // Declare the constant (or overwrite if already injected by resume state)
+    if (this.env.contextManager.hasVariable(binding.name.name)) {
+      this.env.contextManager.setVariable(binding.name.name, value);
+    } else {
+      this.env.contextManager.declareVariable(binding.name.name, value, true, binding.span);
+    }
 
     this.env.log('debug', `Const '${binding.name.name}' declared with value: ${JSON.stringify(value)}`);
 
@@ -403,8 +493,12 @@ export class Interpreter {
     // Evaluate the value expression
     const value = await this.evaluateExpression(assignment.value);
 
-    // Set the variable
-    this.env.contextManager.setVariable(assignment.name.name, value);
+    // Auto-declare the variable if not yet declared (implicit let)
+    if (!this.env.contextManager.hasVariable(assignment.name.name)) {
+      this.env.contextManager.declareVariable(assignment.name.name, value, false, assignment.name.span);
+    } else {
+      this.env.contextManager.setVariable(assignment.name.name, value);
+    }
 
     this.env.log('debug', `Variable '${assignment.name.name}' assigned value: ${JSON.stringify(value)}`);
 
@@ -772,7 +866,16 @@ export class Interpreter {
       if (part.type === 'StringLiteral') {
         result += (part as StringLiteralNode).value;
       } else if (part.type === 'Identifier') {
-        const value = this.env.contextManager.getVariable((part as IdentifierNode).name);
+        const varName = (part as IdentifierNode).name;
+
+        // If the variable is not defined, treat {varname} as a literal string
+        // (common in AI-generated prompts that contain URL path templates like /markets/{id})
+        if (!this.env.contextManager.hasVariable(varName)) {
+          result += `{${varName}}`;
+          continue;
+        }
+
+        const value = this.env.contextManager.getVariable(varName);
 
         // Handle SessionResult objects - extract the output field
         if (isSessionResult(value)) {
@@ -1754,20 +1857,62 @@ Respond with ONLY "true" or "false" (one word, lowercase).`;
    */
   private async executeAskStatement(statement: AskStatementNode): Promise<StatementResult> {
     const varName = statement.variable.name;
+
+    // Resume: if the variable was restored from a previous run's state, skip prompting
+    if (this.env.contextManager.hasVariable(varName)) {
+      const existing = this.env.contextManager.getVariable(varName);
+      this.env.log('info', `[RESUMED] ask ${varName} = "${existing}" (from saved state)`);
+      return { value: existing };
+    }
+
     const promptText = await this.evaluateExpression(statement.prompt) as string;
 
     const answer = await new Promise<string>((resolve) => {
       process.stdout.write(`${BOLD}${CYAN}? ${promptText}${RESET} `);
-      process.stdin.resume();
+
+      // If we already have a buffered line, return it immediately
+      if (this.stdinLineBuffer.length > 0) {
+        resolve(this.stdinLineBuffer.shift()!);
+        return;
+      }
+
+      // Read from stdin, buffering extra lines for subsequent asks
       process.stdin.setEncoding('utf-8');
-      process.stdin.once('data', (data: unknown) => {
-        process.stdin.pause();
-        resolve(String(data).trim());
-      });
+      process.stdin.resume();
+      const onData = (chunk: unknown) => {
+        this.stdinRemainder += String(chunk);
+        const lines = this.stdinRemainder.split('\n');
+        // Last element is incomplete fragment (or '' if chunk ended with \n)
+        this.stdinRemainder = lines.pop()!;
+        this.stdinLineBuffer.push(...lines);
+        if (this.stdinLineBuffer.length > 0) {
+          process.stdin.pause();
+          process.stdin.removeListener('data', onData);
+          resolve(this.stdinLineBuffer.shift()!.trim());
+        }
+      };
+      const onEnd = () => {
+        this.stdinEnded = true;
+        // Flush any remaining data without a trailing newline
+        if (this.stdinRemainder) {
+          this.stdinLineBuffer.push(this.stdinRemainder);
+          this.stdinRemainder = '';
+        }
+        process.stdin.removeListener('data', onData);
+        resolve((this.stdinLineBuffer.shift() ?? '').trim());
+      };
+      process.stdin.once('end', onEnd);
+      process.stdin.on('data', onData);
     });
 
     this.env.log('info', `ask ${varName} = ${GREEN}"${answer}"${RESET}`);
     this.env.contextManager.declareVariable(varName, answer, false, statement.span);
+
+    // Persist immediately so resume can skip re-asking even if no session completes yet
+    if (this.stateStore && this.currentRunId !== null) {
+      this.stateStore.saveUserInput(this.currentRunId, varName, answer);
+    }
+
     return { value: answer };
   }
 
@@ -1884,11 +2029,14 @@ Respond with ONLY "true" or "false" (one word, lowercase).`;
     // Create a new scope for the parallel block
     this.env.contextManager.pushScope();
 
+    // Collect let-binding metadata so we can promote results to the parent scope
+    type LetResult = { value: RuntimeValue; span: import('../parser/tokens').SourceSpan };
+    const results: Map<string, LetResult> = new Map();
+    const errors: Error[] = [];
+
     try {
       // Collect all statements to execute
       const tasks: Promise<void>[] = [];
-      const results: Map<string, RuntimeValue> = new Map();
-      const errors: Error[] = [];
 
       // Execute each statement in the body concurrently
       for (const statement of block.body) {
@@ -1898,11 +2046,15 @@ Respond with ONLY "true" or "false" (one word, lowercase).`;
             // Note: For full isolation, we'd need to clone the context
             await this.executeStatement(statement);
 
-            // If it's a let binding, capture the result
+            // Capture let-bindings and assignments for parent-scope promotion
             if (statement.type === 'LetBinding') {
               const letStmt = statement as LetBindingNode;
               const value = this.env.contextManager.getVariable(letStmt.name.name);
-              results.set(letStmt.name.name, value);
+              results.set(letStmt.name.name, { value, span: letStmt.span });
+            } else if (statement.type === 'Assignment') {
+              const assignStmt = statement as AssignmentNode;
+              const value = this.env.contextManager.getVariable(assignStmt.name.name);
+              results.set(assignStmt.name.name, { value, span: assignStmt.name.span });
             }
           } catch (err) {
             const error = err as Error;
@@ -1957,7 +2109,17 @@ Respond with ONLY "true" or "false" (one word, lowercase).`;
 
       return {};
     } finally {
+      // Pop the parallel scope before promoting let-binding results to parent
       this.env.contextManager.popScope();
+
+      // Declare each captured let-binding in the now-current (parent) scope
+      for (const [name, { value, span }] of results) {
+        if (this.env.contextManager.hasVariable(name)) {
+          this.env.contextManager.setVariable(name, value);
+        } else {
+          this.env.contextManager.declareVariable(name, value, false, span);
+        }
+      }
     }
   }
 

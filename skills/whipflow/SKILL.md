@@ -1,5 +1,6 @@
 ---
 name: whipflow
+version: 0.0.1
 description: |
   Whipflow is an AI workflow automation tool for harness.farm.
   Write .whip files in flows/ to define multi-step AI workflows.

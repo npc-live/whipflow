@@ -1,0 +1,17 @@
+agent bot:
+  provider: "claude-code"
+  model: haiku
+  tools: ["bash"]
+  prompt: "你是一个简单的助手，按要求回答问题。"
+
+ask username: "你叫什么名字？"
+ask color: "你最喜欢什么颜色？"
+
+let step1 = session: bot
+  prompt: "用户叫 {username}，输出：你好 {username}，第一步完成。只输出这一句。"
+
+let step2 = session: bot
+  prompt: "用户喜欢的颜色是 {color}，输出：{color} 真好看，第二步完成。只输出这一句。"
+
+let step3 = session: bot
+  prompt: "输出：{username} 的流程全部跑完了！只输出这一句。"

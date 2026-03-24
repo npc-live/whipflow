@@ -1,0 +1,14 @@
+# Test state persistence — 3 sessions
+
+agent worker:
+  provider: "fetch"
+  model: sonnet
+
+let a = session: worker
+  prompt: "https://httpbin.org/get?step=1"
+
+let b = session: worker
+  prompt: "https://httpbin.org/get?step=2"
+
+let c = session: worker
+  prompt: "https://httpbin.org/get?step=3"

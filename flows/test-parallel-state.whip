@@ -1,0 +1,17 @@
+# Test state with parallel block
+
+agent w:
+  provider: "fetch"
+  model: sonnet
+
+let before = session: w
+  prompt: "https://httpbin.org/get?step=before"
+
+parallel:
+  let p1 = session: w
+    prompt: "https://httpbin.org/get?step=p1"
+  let p2 = session: w
+    prompt: "https://httpbin.org/get?step=p2"
+
+let after = session: w
+  prompt: "https://httpbin.org/get?step=after"

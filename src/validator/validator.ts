@@ -1926,9 +1926,9 @@ export class Validator {
         if (part.type === 'StringLiteral') {
           this.validateStringLiteral(part);
         } else if (part.type === 'Identifier') {
-          // Check if variable is defined
+          // Check if variable is defined; if not, treat as literal {name} (e.g. URL path templates)
           if (!this.isVariableDefined(part.name)) {
-            this.addError(`Undefined variable in interpolation: "${part.name}"`, part.span);
+            this.addWarning(`"{${part.name}}" in prompt is not a defined variable — will be kept as literal text`, part.span);
           }
         }
       }
@@ -2002,7 +2002,7 @@ export class Validator {
     while ((match = interpolationRegex.exec(normalizedValue)) !== null) {
       const varName = match[1];
       if (!this.isVariableDefined(varName)) {
-        this.addError(`Undefined variable in interpolation: "${varName}"`, str.span);
+        this.addWarning(`"{${varName}}" in string is not a defined variable — will be kept as literal text`, str.span);
       }
     }
   }

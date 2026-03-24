@@ -97,8 +97,10 @@ export {
 } from './compiler';
 
 // Runtime exports
-export { execute } from './runtime';
+export { execute, executeWithState } from './runtime';
 export type { ExecutionResult, RuntimeConfig } from './runtime';
+export { StateStore } from './runtime';
+export type { SessionRecord, RunRecord } from './runtime';
 
 /**
  * Version of the whipflow toolkit

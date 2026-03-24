@@ -214,13 +214,27 @@ export class Lexer {
       this.indentStack.push(indent);
       this.addToken(TokenType.INDENT, ' '.repeat(indent - currentIndent));
     } else if (indent < currentIndent) {
+      // Pop levels that are strictly greater than current indent.
+      // Tolerate AI-generated files where sibling lines have slightly different
+      // indentation (e.g. 3 spaces then 2 spaces at the same logical level):
+      // if we would pop all the way back to a level *less* than current indent,
+      // stop one level early and snap that level to current indent so the line
+      // is treated as a sibling rather than jumping two levels up.
       while (this.indentStack.length > 1 && this.indentStack[this.indentStack.length - 1] > indent) {
+        // Peek: would popping this leave us below current indent?
+        const nextLevel = this.indentStack[this.indentStack.length - 2];
+        if (nextLevel < indent) {
+          // Snap current top to indent and stop — treat as same level, no DEDENT
+          this.indentStack[this.indentStack.length - 1] = indent;
+          break;
+        }
         this.indentStack.pop();
         this.addToken(TokenType.DEDENT, '');
       }
 
+      // If still no exact match after popping, snap to current indent
       if (this.indentStack[this.indentStack.length - 1] !== indent) {
-        this.addError(`Inconsistent indentation`);
+        this.indentStack[this.indentStack.length - 1] = indent;
       }
     }
   }
