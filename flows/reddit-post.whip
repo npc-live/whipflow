@@ -1,0 +1,303 @@
+# reddit-post.whip
+# Reddit 高 Engagement 帖子生成工作流 — 出海产品营销
+#
+# 用途: 为 ClawFirm.dev 生成符合 Reddit 社区规则、具有高互动潜力的帖子
+# 输入: 产品/话题关键词、目标 subreddit
+# 输出: ./research-output/reddit-post-draft.md
+#
+# 用法:
+#   whipflow run flows/reddit-post.whip \
+#     --var topic="用 AI 一个人做了一个 SaaS，替代了 3 个全职员工的工作" \
+#     --var subreddit="SideProject"
+
+# ─────────────────────────────────────────────
+# Agent 定义
+# ─────────────────────────────────────────────
+
+agent subreddit_analyst:
+  provider: "claude-code"
+  model: opus
+  tools: ["bash", "read"]
+  prompt: """你是一位资深 Reddit 社区运营专家和增长黑客。
+你深谙 Reddit 的社区文化、算法机制、和各 subreddit 的独特规则与氛围。
+你知道什么样的内容会被 upvote，什么会被 downvote 到地狱。
+关键原则：
+- Reddit 用户极度反感赤裸裸的自我推广（self-promotion）
+- 价值优先：帖子必须对社区有实际价值，产品只是附带
+- 真实性：Reddit 用户有最灵敏的"营销话术检测器"
+- 遵守每个 subreddit 的 sidebar 规则是底线"""
+
+agent content_strategist:
+  provider: "claude-code"
+  model: opus
+  tools: ["bash", "read"]
+  prompt: """你是一位精通海外内容营销的策略师，专注 indie hacker / solopreneur 圈层。
+你的写作风格：
+- 像在跟朋友聊天，不像在写文案
+- 数据驱动，用具体数字代替形容词
+- 坦诚分享失败和教训，不只讲成功
+- 英文写作地道自然，不是中式英语翻译腔
+你了解 ClawFirm.dev 的定位：AI 驱动的一人公司自动化引擎。"""
+
+agent engagement_optimizer:
+  provider: "claude-code"
+  model: opus
+  tools: ["bash", "read"]
+  prompt: """你是一位内容 engagement 优化专家，专门研究 Reddit 的算法和用户行为。
+你知道：
+- Reddit 帖子的前 1 小时 upvote/comment 速度决定生死
+- 标题是最重要的单一因素，占 80% 的权重
+- 发帖时间影响曝光（北美时区工作日上午最佳）
+- 评论区互动能持续推高帖子排名
+- 长文 text post 在很多 subreddit 表现优于链接帖"""
+
+agent writer:
+  provider: "claude-code"
+  model: haiku
+  tools: ["bash", "write"]
+  prompt: "将收到的内容原样写入指定文件，不做任何修改。写入后输出文件路径和行数。"
+
+# ─────────────────────────────────────────────
+# 第一步：Subreddit 调研和规则分析
+# ─────────────────────────────────────────────
+
+let subreddit_research = session: subreddit_analyst
+  prompt: """针对话题「{{topic}}」和目标 subreddit r/{{subreddit}}，完成以下调研：
+
+## 1. Subreddit 规则深度分析
+
+请用 bash 执行以下命令获取 subreddit 信息：
+- curl -s -H "User-Agent: WhipFlow/1.0" "https://www.reddit.com/r/{{subreddit}}/about.json" | jq '.data | {title, public_description, submit_text, submission_type, allow_images, allow_videos}'
+- curl -s -H "User-Agent: WhipFlow/1.0" "https://www.reddit.com/r/{{subreddit}}/about/rules.json" | jq '.rules[] | {short_name, description}'
+
+基于以上数据，输出：
+
+### 1.1 硬性规则（违反 = 删帖/ban）
+逐条列出该 subreddit 的发帖规则，标注：
+- 规则内容
+- 对我们帖子的约束（具体到什么能写、什么不能写）
+
+### 1.2 软性规范（违反 = downvote）
+- 该社区的隐性文化和氛围（严肃技术讨论 vs 轻松分享）
+- 常见的被 downvote 的行为模式
+- 自我推广的容忍度（有些 sub 完全禁止，有些允许一定比例）
+
+### 1.3 高赞帖子模式分析
+
+请抓取该 subreddit 的 Top 帖子：
+- curl -s -H "User-Agent: WhipFlow/1.0" "https://www.reddit.com/r/{{subreddit}}/top.json?t=month&limit=10" | jq '.data.children[] | {title: .data.title, score: .data.score, num_comments: .data.num_comments, selftext_length: (.data.selftext | length), link_flair_text: .data.link_flair_text}'
+
+分析 Top 帖子的共同特征：
+- 标题模式（长度、句式、关键词）
+- 内容类型（text post vs link vs image）
+- 帖子长度
+- Flair 使用情况
+- 什么话题/角度获得最多互动
+
+## 2. 目标 Subreddit 适配推荐
+
+除了 r/{{subreddit}}，还有哪些 subreddit 适合这个话题？
+列出 3-5 个备选 subreddit，每个附上：
+| Subreddit | 成员数 | 与话题匹配度 | 自推广容忍度 | 最佳发帖类型 |
+
+## 3. Reddit 通用规则提醒
+- Reddit 全站 self-promotion 规则（10% 规则）
+- 新账号/低 karma 账号限制
+- 跨 subreddit 同时发帖的风险（被判定 spam）"""
+
+# ─────────────────────────────────────────────
+# 第二步：帖子内容策略和草稿
+# ─────────────────────────────────────────────
+
+let content_draft = session: content_strategist
+  context: subreddit_research
+  prompt: """基于以上 subreddit 调研结果，为话题「{{topic}}」创建 Reddit 帖子草稿。
+
+## 1. 内容角度选择
+
+提供 3 个不同的内容角度，按推荐优先级排序：
+
+| 角度 | 标题方向 | 价值主张（对读者） | 风险评估 |
+举例：
+- 角度 A：纯价值分享（教程/经验），最后自然提到产品
+- 角度 B：Show & Tell（展示成果），邀请反馈
+- 角度 C：讨论引导型（提问引发对话），在回复中提到产品
+
+## 2. 帖子完整草稿（推荐角度）
+
+### 标题
+- 提供 5 个标题候选，标注各自的策略思路
+- 标题必须：
+  - 不超过 300 字符
+  - 不使用 clickbait 句式（"You won't believe..."）
+  - 具体有信息量（有数字更好）
+  - 不带 emoji（Reddit 文化通常不用 emoji 标题）
+
+### 正文（Text Post）
+
+写一篇完整的帖子正文，要求：
+
+**开头（Hook — 前 2 句）：**
+- 直接切入，不要 "Hey everyone" 之类的废话
+- 用一个具体的数据点或反直觉观点抓住注意力
+
+**主体内容：**
+- 分享真实的经验/数据/教训
+- 用 Reddit 的 markdown 格式（# 标题、- 列表、**加粗**、> 引用）
+- 每段不超过 3 行（Reddit 用户不读大段文字）
+- 包含具体数字和细节（"spent 3 weeks" 而非 "spent some time"）
+- 如果有技术内容，用简洁的方式解释，不过度炫技
+
+**产品提及（如需要）：**
+- 只在提供完整价值之后才提及
+- 用「顺便说一句 / btw」的语气，不是广告
+- 不放直接链接（除非 subreddit 规则允许），说"check my profile"
+- 或者完全不在正文提产品，只在评论区有人问时回复
+
+**结尾（CTA — 引发讨论）：**
+- 问一个真诚的、开放式的问题
+- 不要 "Hope this helps!"（Reddit 用户觉得这很假）
+- 最好是邀请读者分享他们自己的经验
+
+**格式规范：**
+- 使用 Reddit markdown
+- 适当用 --- 分隔章节
+- 关键数字/要点加粗
+- 代码用 code block
+- 帖子总长度建议 300-800 词（取决于 subreddit 偏好）
+
+## 3. 首评策略
+
+写一条自己帖子发出后立即在评论区发的「首评」：
+- 可以补充正文没放的背景信息
+- 或者提前回答大家可能会问的问题
+- 自然地引出产品/项目（"这是用 XX 做的，有兴趣可以看看"）
+
+## 4. 预判问题和回复模板
+
+预判 5 个读者可能在评论区问的问题，提前准备回复：
+| 预判问题 | 回复要点 | 回复语气 |
+每条回复不超过 3 句话，保持对话感。"""
+
+# ─────────────────────────────────────────────
+# 第三步：Engagement 优化和最终检查
+# ─────────────────────────────────────────────
+
+let optimized_post = session: engagement_optimizer
+  context: { subreddit_research, content_draft }
+  prompt: """基于 subreddit 调研和帖子草稿，进行最终的 engagement 优化和合规检查。
+
+## 1. 标题 A/B 优化
+
+对草稿中的 5 个标题候选做以下评估：
+
+| 标题 | 信息密度 (1-5) | 情感触发 (1-5) | 好奇心缺口 (1-5) | 与 sub 文化匹配 (1-5) | 综合分 | 改进建议 |
+
+给出最终推荐标题（可以是优化后的新版本）。
+
+## 2. 正文 Engagement 审计
+
+逐段审查正文：
+
+### 2.1 Hook 检查
+- 前 2 句是否足够抓人？（Reddit 用户平均只给 3 秒判断是否继续读）
+- 是否有"so what"的明确回答？
+
+### 2.2 可读性检查
+- 段落长度是否适合 Reddit（移动端占 60%+ 流量）
+- 是否有过长的段落需要拆分
+- 格式化是否充分利用了 Reddit markdown
+
+### 2.3 价值密度检查
+- 每一段是否都提供了新信息
+- 是否有水分或重复内容需要删除
+- 整体长度是否适合目标 subreddit
+
+### 2.4 自我推广风险检查 ⚠️
+这是最关键的检查项：
+- [ ] 帖子即使删掉所有产品相关内容，仍然有独立价值吗？
+- [ ] 产品提及是否自然、不突兀？
+- [ ] 是否触发 Reddit 用户的"广告检测"直觉？
+- [ ] 是否符合 subreddit 的自推广规则？
+- [ ] 账号的历史帖子是否有足够的非推广内容？
+
+如果任何一项未通过，必须修改直到通过。
+
+## 3. 发帖时机建议
+
+| 时区 | 最佳发帖时间 | 原因 |
+基于 r/{{subreddit}} 的用户群体地理分布，推荐具体的发帖时间。
+
+## 4. 发帖后互动策略
+
+帖子发出后的操作 SOP：
+- **0-5 分钟**：发出首评
+- **5-30 分钟**：需要做什么
+- **30-60 分钟**：关键的黄金互动期
+- **1-4 小时**：持续关注
+- **4-24 小时**：长尾互动
+
+## 5. 跨 Subreddit 分发计划
+
+如果帖子要发到多个 subreddit：
+- 每个 sub 需要调整什么（标题/角度/长度）
+- 发帖时间间隔（避免被 spam filter 捕获）
+- 每个 sub 的内容微调要点
+
+## 6. 最终帖子输出
+
+输出最终优化版帖子，格式：
+
+```
+═══════════════════════════════════════
+REDDIT POST — FINAL VERSION
+═══════════════════════════════════════
+
+TARGET: r/{{subreddit}}
+FLAIR: [建议 flair]
+POST TYPE: Text Post
+
+─── TITLE ───
+[最终标题]
+
+─── BODY ───
+[最终正文，使用 Reddit markdown]
+
+─── FIRST COMMENT ───
+[首评内容]
+
+─── POSTING TIME ───
+[建议发帖时间]
+
+─── CHECKLIST ───
+[ ] 标题无 clickbait
+[ ] 正文无直接产品链接（除非规则允许）
+[ ] 帖子有独立价值（删掉产品提及仍有价值）
+[ ] 符合 r/{{subreddit}} 所有规则
+[ ] 语气自然、不像营销文案
+[ ] 结尾有开放式问题引导讨论
+[ ] 首评已准备好
+═══════════════════════════════════════
+```"""
+
+# ─────────────────────────────────────────────
+# 第四步：输出完整文档
+# ─────────────────────────────────────────────
+
+session: writer
+  context: { subreddit_research, content_draft, optimized_post }
+  prompt: """mkdir -p ./research-output
+将以上三份内容合并为一份完整文档，写入 ./research-output/reddit-post-draft.md，顶部加：
+---
+title: Reddit 帖子草稿 — {{topic}}
+target_subreddit: r/{{subreddit}}
+date: {{current_date}}
+status: draft
+---
+
+文档结构：
+1. Subreddit 调研报告
+2. 帖子内容策略与草稿
+3. Engagement 优化报告与最终版帖子
+
+写入后输出文件路径和行数。"""
