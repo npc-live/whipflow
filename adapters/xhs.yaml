@@ -1,0 +1,182 @@
+platform: xhs
+login_url: https://www.xiaohongshu.com
+login_check:
+  cookie: web_session
+
+commands:
+
+  # ─── 图文笔记发布 ─────────────────────────────────────────────────
+  # publisher-xhs.ts 调用: runCommand('xhs', 'post', [title, bodyWithTags], cdp)
+  post:
+    args: [title, body]
+    steps:
+      - open: "https://creator.xiaohongshu.com/publish/publish?source=official"
+      - wait: 3000
+      # 等待编辑器加载完成
+      - wait:
+          selector: ".tiptap.ProseMirror"
+      # 填写标题（标准 input，用 fill 绕过 React 受控组件）
+      - fill:
+          selector: "input.d-text"
+          value: "{{title}}"
+      - wait: 500
+      # 填写正文（ProseMirror contenteditable，用 type_rich）
+      - type_rich:
+          selector: ".tiptap.ProseMirror"
+          value: "{{body}}"
+      - wait: 800
+      # 验证标题已写入
+      - capture:
+          name: input_title
+          eval: "document.querySelector('input.d-text')?.value || ''"
+      # 验证正文已写入
+      - capture:
+          name: input_body
+          eval: "document.querySelector('.tiptap.ProseMirror')?.textContent?.trim() || ''"
+      # 点击发布按钮（小红书无 data-testid，用文本匹配）
+      - click:
+          text: "发布"
+      - wait: 3000
+      - capture:
+          name: result_url
+          eval: "location.href"
+      - return:
+          - field: 状态
+            value: "✅ 小红书笔记发布成功"
+          - field: 标题
+            value: "{{title}}"
+          - field: 标题确认
+            value: "{{input_title}}"
+          - field: 正文确认
+            value: "{{input_body}}"
+
+  # ─── 视频笔记发布 ─────────────────────────────────────────────────
+  post_video:
+    args: [video, title, body]
+    steps:
+      - open: "https://creator.xiaohongshu.com/publish/publish?source=official"
+      - wait: 3000
+      # 上传视频文件
+      - upload:
+          selector: "input.upload-input"
+          file: "{{video}}"
+      # 等待视频处理完成（轮询：上传进度消失 + 封面预览出现）
+      - eval: >-
+          (async function(){
+            for(var i=0; i<90; i++){
+              var progress = document.querySelector('.progress-bar, .upload-progress, [class*="progress"]');
+              var preview = document.querySelector('.cover-preview, .video-cover, video, [class*="cover"] img');
+              if(!progress && preview) return true;
+              if(i > 5 && !document.querySelector('input.upload-input')) return true;
+              await new Promise(function(r){ setTimeout(r, 2000); });
+            }
+            return false;
+          })()
+      - wait: 1000
+      # 等待标题输入框出现
+      - wait:
+          selector: "input.d-text"
+      # 填写标题
+      - fill:
+          selector: "input.d-text"
+          value: "{{title}}"
+      - wait: 500
+      # 填写正文
+      - type_rich:
+          selector: ".tiptap.ProseMirror"
+          value: "{{body}}"
+      - wait: 800
+      # 验证标题
+      - capture:
+          name: input_title
+          eval: "document.querySelector('input.d-text')?.value || ''"
+      # 验证正文
+      - capture:
+          name: input_body
+          eval: "document.querySelector('.tiptap.ProseMirror')?.textContent?.trim() || ''"
+      # 点击发布
+      - click:
+          text: "发布"
+      - wait: 3000
+      - capture:
+          name: result_url
+          eval: "location.href"
+      - return:
+          - field: 状态
+            value: "✅ 小红书视频笔记发布成功"
+          - field: 标题
+            value: "{{title}}"
+          - field: 标题确认
+            value: "{{input_title}}"
+          - field: 正文确认
+            value: "{{input_body}}"
+
+  # ─── 搜索笔记 ─────────────────────────────────────────────────────
+  search:
+    args: [keyword]
+    steps:
+      - open: "https://www.xiaohongshu.com/search_result?keyword={{keyword}}&source=web_explore_feed"
+      - wait: 4000
+      - extract:
+          selector: ".note-item"
+          fields:
+            title: ".title, .note-title, h3"
+            author: ".author, .user-name, .name"
+            link:
+              selector: "a"
+              attr: href
+            likes: ".like-count, .count, [class*='like']"
+
+  # ─── 点赞笔记 ─────────────────────────────────────────────────────
+  like:
+    args: [url]
+    steps:
+      - open: "{{url}}"
+      - wait: 3000
+      # 检查是否已点赞（按钮 active 状态）
+      - capture:
+          name: already_liked
+          eval: >-
+            !!(document.querySelector('.like-active, .liked, [class*="like"][class*="active"]'))
+      # 点击点赞按钮
+      - eval: >-
+          (function(){
+            var btn = document.querySelector('.like-wrapper .like-icon, [class*="like"]:not([class*="active"]) svg, .like-btn, .note-like');
+            if(!btn) btn = document.querySelector('[class*="like"]');
+            if(btn) { btn.closest('button, [role="button"], span, div[class*="like"]')?.click() || btn.click(); return true; }
+            return false;
+          })()
+      - wait: 1500
+      - capture:
+          name: is_liked
+          eval: >-
+            !!(document.querySelector('.like-active, .liked, [class*="like"][class*="active"]'))
+      - return:
+          - field: 操作
+            value: "{{already_liked == 'true' && '已点赞（跳过）' || '点赞成功'}}"
+          - field: 状态
+            value: "{{is_liked}}"
+
+  # ─── 评论笔记 ─────────────────────────────────────────────────────
+  comment:
+    args: [url, text]
+    steps:
+      - open: "{{url}}"
+      - wait: 3000
+      # 点击评论输入框激活
+      - click:
+          selector: ".comment-input, #comment-textarea, [placeholder*='评论'], [class*='comment'] input, [class*='comment'] textarea"
+      - wait: 500
+      # 输入评论内容
+      - type_rich:
+          selector: ".comment-input, #comment-textarea, [placeholder*='评论'], [class*='comment'] [contenteditable='true']"
+          value: "{{text}}"
+      - wait: 500
+      # 提交评论（回车键）
+      - key: "Enter"
+      - wait: 2000
+      - return:
+          - field: 状态
+            value: "✅ 评论成功"
+          - field: 内容
+            value: "{{text}}"
